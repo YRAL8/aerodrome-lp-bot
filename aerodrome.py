@@ -64,6 +64,32 @@ class Position:
 # не сможет "выйти" из диапазона — баг, найденный и исправленный в Orca-версии
 # в самом начале того проекта, тут учтён сразу).
 _demo_range: dict | None = None
+_pool_static_cache: dict[str, dict] = {}
+
+
+def _get_pool_static_state(w3: Web3, pool) -> dict:
+    """Кэш неизменяемых параметров уже развёрнутого пула.
+
+    token0/token1/decimals/tickSpacing не меняются для существующего пула,
+    поэтому читаем один раз, чтобы не перегружать RPC.
+    """
+    pool_addr = getattr(pool, "address", None) or POOL_ADDRESS
+    key = Web3.to_checksum_address(pool_addr)
+    cached = _pool_static_cache.get(key)
+    if cached is not None:
+        return cached
+
+    token0_addr = Web3.to_checksum_address(pool.functions.token0().call())
+    token1_addr = Web3.to_checksum_address(pool.functions.token1().call())
+    token0 = w3.eth.contract(address=token0_addr, abi=ERC20_ABI)
+    token1 = w3.eth.contract(address=token1_addr, abi=ERC20_ABI)
+    dec0 = token0.functions.decimals().call()
+    dec1 = token1.functions.decimals().call()
+    tick_spacing = pool.functions.tickSpacing().call()
+
+    cached = {"dec0": dec0, "dec1": dec1, "tick_spacing": tick_spacing}
+    _pool_static_cache[key] = cached
+    return cached
 
 
 def _get_web3() -> Web3:
@@ -78,13 +104,10 @@ async def _pool_state(w3: Web3, pool) -> dict:
     """Разовое чтение состояния пула: цена, тик, decimals обоих токенов.
     web3.py синхронный, но держим async-обёртку для единообразия с остальным
     ботом (main.py/monitor будет async, как и в orca-lp-bot)."""
-    token0_addr = Web3.to_checksum_address(pool.functions.token0().call())
-    token1_addr = Web3.to_checksum_address(pool.functions.token1().call())
-    token0 = w3.eth.contract(address=token0_addr, abi=ERC20_ABI)
-    token1 = w3.eth.contract(address=token1_addr, abi=ERC20_ABI)
-    dec0 = token0.functions.decimals().call()
-    dec1 = token1.functions.decimals().call()
-    tick_spacing = pool.functions.tickSpacing().call()
+    static = _get_pool_static_state(w3, pool)
+    dec0 = static["dec0"]
+    dec1 = static["dec1"]
+    tick_spacing = static["tick_spacing"]
     slot0 = pool.functions.slot0().call()
     sqrt_price_x96, tick = slot0[0], slot0[1]
 
@@ -195,7 +218,7 @@ async def get_position() -> Optional[Position]:
             # чтобы диапазон гарантированно покрывал исходные границы. В нашем случае
             # из-за инверсии цены tick для raw_lower может оказаться численно больше tick
             # для raw_upper — поэтому выбираем направление выравнивания по порядку тиков.
-            if raw_tick_lower <= raw_tick_upper:
+            if raw_tick_lower < raw_tick_upper:
                 tick_lower = _align_tick(raw_tick_lower, tick_spacing, rounding="down")
                 tick_upper = _align_tick(raw_tick_upper, tick_spacing, rounding="up")
             else:

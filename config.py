@@ -15,11 +15,24 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 # Настройки бота
-DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
-DEMO_POSITION = os.getenv("DEMO_POSITION", "true").lower() == "true"
+_TRUE_VALUES = {"true", "1", "yes", "y", "on"}
+
+
+def _env_bool(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in _TRUE_VALUES
+
+
+DRY_RUN = _env_bool("DRY_RUN", "true")
+DEMO_POSITION = _env_bool("DEMO_POSITION", "true")
 DEMO_DEPOSIT_USD = float(os.getenv("DEMO_DEPOSIT_USD", "1000"))
 RANGE_WIDTH_PCT = float(os.getenv("RANGE_WIDTH_PCT", "8"))
 POLL_INTERVAL_SEC = int(os.getenv("POLL_INTERVAL_SEC", "300"))
+
+if not (0 < RANGE_WIDTH_PCT < 100):
+    raise ValueError("RANGE_WIDTH_PCT must be strictly between 0 and 100 (exclusive)")
+
+if POLL_INTERVAL_SEC < 1:
+    raise ValueError("POLL_INTERVAL_SEC must be >= 1")
 
 _PLACEHOLDER_MARKERS = ("YOUR_", "CHANGE_ME", "TODO", "PLACEHOLDER")
 
