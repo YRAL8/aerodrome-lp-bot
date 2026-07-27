@@ -6,7 +6,7 @@ from typing import Optional
 import config
 import aerodrome
 from aerodrome import get_position
-from telegram_notify import send_telegram_message
+from telegram_notify import send_telegram_message, format_position_table, format_range_bar
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -54,7 +54,14 @@ async def monitor_position() -> None:
                 "СОБЫТИЕ: цена вышла из диапазона (с %s UTC).",
                 since_str,
             )
-            send_telegram_message(f"СОБЫТИЕ: цена вышла из диапазона (с {since_str} UTC).")
+            send_telegram_message(
+                f"⚠️ <b>Цена вышла за границу!</b>\n"
+                f"{format_position_table(position)}\n"
+                f"📈 Цена cbBTC: ${position.current_price:,.2f}\n"
+                f"{format_range_bar(position)}\n"
+                f"Статус: ⚠️ ВНЕ диапазона\n"
+                f"Продолжаю наблюдать..."
+            )
         elif position.in_range and out_of_range_since is not None:
             duration_sec = max(0.0, (now - out_of_range_since).total_seconds())
             since = out_of_range_since.replace(microsecond=0).isoformat().replace("+00:00", "")
@@ -66,7 +73,13 @@ async def monitor_position() -> None:
                 since,
             )
             send_telegram_message(
-                f"СОБЫТИЕ: цена вернулась в диапазон (вне диапазона {duration_sec:.0f} сек, с {since} UTC)."
+                f"✅ <b>Цена вернулась в диапазон</b>\n"
+                f"{format_position_table(position)}\n"
+                f"📈 Цена cbBTC: ${position.current_price:,.2f}\n"
+                f"{format_range_bar(position)}\n"
+                f"Статус: ✅ в диапазоне\n"
+                f"Вне диапазона была {duration_sec:.0f} сек.\n"
+                f"Продолжаю мониторинг..."
             )
 
     except Exception:
@@ -79,8 +92,12 @@ async def main() -> None:
     log.info(f"Пул: {config.POOL_ADDRESS}")
     log.info("=" * 50)
 
+    mode = "DEMO" if config.DRY_RUN else "БОЕВОЙ"
     send_telegram_message(
-        f"Aerodrome LP-бот запущен (DRY RUN: {config.DRY_RUN}), пул {config.POOL_ADDRESS}"
+        f"🤖 <b>Aerodrome LP-бот запущен</b>\n"
+        f"Режим: {mode}\n"
+        f"Пара: USDC/cbBTC · опрос {config.POLL_INTERVAL_SEC} сек\n"
+        f"Пул: <code>{config.POOL_ADDRESS}</code>"
     )
 
     try:
