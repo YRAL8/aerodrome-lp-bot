@@ -9,9 +9,16 @@ from aerodrome import get_position
 from telegram_notify import send_telegram_message, format_position_table, format_range_bar
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# python-telegram-bot использует httpx/httpcore: на INFO они логируют полный URL,
+# включая bot token. Держим эти логгеры на WARNING, как в orca-lp-bot.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 out_of_range_since: Optional[datetime] = None
+bot_paused = False
+bot_frozen = False
 _state = aerodrome._load_demo_state() or {}
 _oors = _state.get("out_of_range_since")
 if isinstance(_oors, str) and _oors:
@@ -23,7 +30,11 @@ if isinstance(_oors, str) and _oors:
 
 
 async def monitor_position() -> None:
-    global out_of_range_since
+    global out_of_range_since, bot_paused, bot_frozen
+
+    if bot_paused or bot_frozen:
+        log.info("Бот на паузе/заморожен (/pauza, /stop) — пропускаю тик")
+        return
 
     try:
         position = await get_position()
@@ -92,6 +103,31 @@ async def main() -> None:
     log.info(f"Пул: {config.POOL_ADDRESS}")
     log.info("=" * 50)
 
+    async def _monitor_loop() -> None:
+        while True:
+            await monitor_position()
+            await asyncio.sleep(config.POLL_INTERVAL_SEC)
+
+    tg = None
+    app = None
+    can_start_telegram = False
+    if not config.is_placeholder(config.TELEGRAM_BOT_TOKEN):
+        try:
+            import telegram_commands as tg
+        except Exception as e:
+            log.exception("Не удалось импортировать telegram_commands, продолжаю без polling: %s", e)
+        else:
+            app = tg.build_telegram_app()
+            try:
+                await app.bot.get_me()
+            except Exception as e:
+                log.exception(
+                    "Telegram токен невалиден или API недоступен, продолжаю без входящих команд: %s",
+                    e,
+                )
+            else:
+                can_start_telegram = True
+
     mode = "DEMO" if config.DRY_RUN else "БОЕВОЙ"
     send_telegram_message(
         f"🤖 <b>Aerodrome LP-бот запущен</b>\n"
@@ -100,10 +136,41 @@ async def main() -> None:
         f"Пул: <code>{config.POOL_ADDRESS}</code>"
     )
 
+    if can_start_telegram and app is not None and tg is not None:
+        try:
+            async with app:
+                await app.start()
+                try:
+                    await tg.register_menu_commands(app)
+                except Exception as e:
+                    log.exception("Не удалось зарегистрировать меню команд: %s", e)
+                await app.updater.start_polling()
+                log.info("Telegram polling запущен, команды активны: /status /pauza /stop /boevoy")
+
+                monitor_task = asyncio.create_task(_monitor_loop())
+                try:
+                    while True:
+                        await asyncio.sleep(1)
+                except (KeyboardInterrupt, SystemExit):
+                    log.info("Остановка по сигналу (KeyboardInterrupt/SystemExit).")
+                finally:
+                    monitor_task.cancel()
+                    try:
+                        await monitor_task
+                    except asyncio.CancelledError:
+                        pass
+                    await app.updater.stop()
+                    await app.stop()
+            return
+        except Exception as e:
+            log.exception("Ошибка запуска Telegram, продолжаю без входящих команд: %s", e)
+
+    if config.is_placeholder(config.TELEGRAM_BOT_TOKEN):
+        log.warning("Telegram токен не задан, входящие команды отключены")
+    else:
+        log.warning("Входящие Telegram-команды отключены из-за ошибки токена или API")
     try:
-        while True:
-            await monitor_position()
-            await asyncio.sleep(config.POLL_INTERVAL_SEC)
+        await _monitor_loop()
     except (KeyboardInterrupt, SystemExit):
         log.info("Остановка по сигналу (KeyboardInterrupt/SystemExit).")
 
