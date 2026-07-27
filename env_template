@@ -1,0 +1,22 @@
+# Base RPC (публичный mainnet.base.org — только чтение, для реальных денег
+# понадобится платный провайдер типа Alchemy/QuickNode, тот же урок, что и с
+# Helius для orca-lp-bot: паблик RPC не выдержит частых real-money операций)
+BASE_RPC_URL=https://mainnet.base.org
+
+# Кошелёк бота (приватный ключ EVM, hex-строка с 0x или без — определяется в коде)
+WALLET_PRIVATE_KEY=YOUR_PRIVATE_KEY_HEX
+
+# Aerodrome Slipstream пул USDC-cbBTC (0.05% фактический тир, tickSpacing=100),
+# найден и проверен напрямую в блокчейне 2026-07-27
+POOL_ADDRESS=0x4e962BB3889Bf030368F56810A9c96B83CB3E778
+
+# Telegram
+TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN
+TELEGRAM_CHAT_ID=YOUR_CHAT_ID
+
+# Настройки бота
+DRY_RUN=true
+DEMO_POSITION=true
+DEMO_DEPOSIT_USD=1000
+RANGE_WIDTH_PCT=8
+POLL_INTERVAL_SEC=300
