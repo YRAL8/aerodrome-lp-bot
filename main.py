@@ -4,12 +4,21 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import config
+import aerodrome
 from aerodrome import get_position
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
 out_of_range_since: Optional[datetime] = None
+_state = aerodrome._load_demo_state() or {}
+_oors = _state.get("out_of_range_since")
+if isinstance(_oors, str) and _oors:
+    try:
+        _dt = datetime.fromisoformat(_oors)
+        out_of_range_since = _dt if _dt.tzinfo is not None else _dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        out_of_range_since = None
 
 
 async def monitor_position() -> None:
@@ -34,6 +43,9 @@ async def monitor_position() -> None:
         now = datetime.now(timezone.utc)
         if not position.in_range and out_of_range_since is None:
             out_of_range_since = now
+            aerodrome._update_demo_state(
+                {"out_of_range_since": out_of_range_since.replace(microsecond=0).isoformat()}
+            )
             log.warning(
                 "СОБЫТИЕ: цена вышла из диапазона (с %s UTC).",
                 out_of_range_since.replace(microsecond=0)
@@ -44,6 +56,7 @@ async def monitor_position() -> None:
             duration_sec = max(0.0, (now - out_of_range_since).total_seconds())
             since = out_of_range_since.replace(microsecond=0).isoformat().replace("+00:00", "")
             out_of_range_since = None
+            aerodrome._update_demo_state({"out_of_range_since": None})
             log.info(
                 "СОБЫТИЕ: цена вернулась в диапазон (вне диапазона %.0f сек, с %s UTC).",
                 duration_sec,

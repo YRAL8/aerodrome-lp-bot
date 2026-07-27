@@ -13,6 +13,8 @@ tickSpacing=100, token0=USDC (6 знаков), token1=cbBTC (8 знаков).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 from typing import Optional
 
 from web3 import Web3
@@ -65,6 +67,32 @@ class Position:
 # в самом начале того проекта, тут учтён сразу).
 _demo_range: dict | None = None
 _pool_static_cache: dict[str, dict] = {}
+
+_DEMO_STATE_FILE = Path(__file__).with_name("demo_state.json")
+
+
+def _load_demo_state() -> dict | None:
+    try:
+        with _DEMO_STATE_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError:
+        return None
+
+
+def _write_demo_state(state: dict) -> None:
+    tmp = _DEMO_STATE_FILE.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+    tmp.replace(_DEMO_STATE_FILE)
+
+
+def _update_demo_state(patch: dict) -> None:
+    state = _load_demo_state() or {}
+    state.update(patch)
+    _write_demo_state(state)
 
 
 def _get_pool_static_state(w3: Web3, pool) -> dict:
@@ -209,6 +237,12 @@ async def get_position() -> Optional[Position]:
     if DRY_RUN and DEMO_POSITION:
         global _demo_range
         if _demo_range is None:
+            state_from_disk = _load_demo_state() or {}
+            demo_from_disk = state_from_disk.get("demo_range")
+            if isinstance(demo_from_disk, dict):
+                _demo_range = demo_from_disk
+
+        if _demo_range is None:
             raw_lower = current_price * (1 - config.RANGE_WIDTH_PCT / 100)
             raw_upper = current_price * (1 + config.RANGE_WIDTH_PCT / 100)
             raw_tick_lower = _price_to_tick(raw_lower, dec0, dec1)
@@ -233,15 +267,28 @@ async def get_position() -> Optional[Position]:
             # второй раз и переворачивала диапазон — поймано сразу на первом
             # живом прогоне (2026-07-27): позиция показывала "ВНЕ диапазона"
             # при цене ровно посередине настроенного диапазона.
-            _demo_range = {"tick_lower": tick_lower, "tick_upper": tick_upper}
+            lower_price_at_creation = _tick_to_price(tick_lower, dec0, dec1)
+            upper_price_at_creation = _tick_to_price(tick_upper, dec0, dec1)
+            usdc, btc, _, _, _ = _demo_amounts_from_deposit(
+                current_price, lower_price_at_creation, upper_price_at_creation, DEMO_DEPOSIT_USD
+            )
+            _demo_range = {
+                "tick_lower": tick_lower,
+                "tick_upper": tick_upper,
+                "amount_token0": usdc,
+                "amount_token1": btc,
+            }
+            _update_demo_state({"demo_range": _demo_range})
 
         lower_price = _tick_to_price(_demo_range["tick_lower"], dec0, dec1)
         upper_price = _tick_to_price(_demo_range["tick_upper"], dec0, dec1)
 
         in_range = lower_price <= current_price <= upper_price
-        usdc, btc, usdc_usd, btc_usd, total = _demo_amounts_from_deposit(
-            current_price, lower_price, upper_price, DEMO_DEPOSIT_USD
-        )
+        usdc = float(_demo_range.get("amount_token0", 0.0))
+        btc = float(_demo_range.get("amount_token1", 0.0))
+        usdc_usd = usdc
+        btc_usd = btc * current_price
+        total = usdc_usd + btc_usd
         return Position(
             lower_price=lower_price,
             upper_price=upper_price,
@@ -264,3 +311,7 @@ async def get_position() -> Optional[Position]:
 def reset_demo_range() -> None:
     global _demo_range
     _demo_range = None
+    try:
+        _DEMO_STATE_FILE.unlink()
+    except FileNotFoundError:
+        pass
