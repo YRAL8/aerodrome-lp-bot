@@ -78,8 +78,8 @@ async def _pool_state(w3: Web3, pool) -> dict:
     """Разовое чтение состояния пула: цена, тик, decimals обоих токенов.
     web3.py синхронный, но держим async-обёртку для единообразия с остальным
     ботом (main.py/monitor будет async, как и в orca-lp-bot)."""
-    token0_addr = pool.functions.token0().call()
-    token1_addr = pool.functions.token1().call()
+    token0_addr = Web3.to_checksum_address(pool.functions.token0().call())
+    token1_addr = Web3.to_checksum_address(pool.functions.token1().call())
     token0 = w3.eth.contract(address=token0_addr, abi=ERC20_ABI)
     token1 = w3.eth.contract(address=token1_addr, abi=ERC20_ABI)
     dec0 = token0.functions.decimals().call()
@@ -110,7 +110,7 @@ def _price_to_tick(price_0_per_1: float, dec0: int, dec1: int) -> int:
 
     price_1_per_0_human = 1 / price_0_per_1
     raw_price_1_per_0 = price_1_per_0_human / 10 ** (dec0 - dec1)
-    return int(math.log(raw_price_1_per_0) / math.log(1.0001))
+    return math.floor(math.log(raw_price_1_per_0) / math.log(1.0001))
 
 
 def _tick_to_price(tick: int, dec0: int, dec1: int) -> float:
@@ -120,8 +120,23 @@ def _tick_to_price(tick: int, dec0: int, dec1: int) -> float:
     return 1 / price_1_per_0_human
 
 
-def _align_tick(tick: int, tick_spacing: int) -> int:
-    return (tick // tick_spacing) * tick_spacing
+def _align_tick(tick: int, tick_spacing: int, rounding: str = "down") -> int:
+    """Выравнивает tick к сетке tick_spacing.
+
+    rounding:
+      - "down": floor к ближайшему кратному (в сторону -inf)
+      - "up": ceil к ближайшему кратному (в сторону +inf)
+    """
+    import math
+
+    if tick_spacing <= 0:
+        raise ValueError("tick_spacing must be positive")
+
+    if rounding == "down":
+        return (tick // tick_spacing) * tick_spacing
+    if rounding == "up":
+        return math.ceil(tick / tick_spacing) * tick_spacing
+    raise ValueError("rounding must be 'down' or 'up'")
 
 
 def _demo_amounts_from_deposit(
@@ -132,13 +147,13 @@ def _demo_amounts_from_deposit(
     демо-расчёта, что в orca-lp-bot: не точная формула концентрированной
     ликвидности, а прикидка 50/50 с учётом того, в диапазоне цена или нет)."""
     if current_price <= lower_price:
-        # Цена ниже диапазона — позиция целиком в token0 (USDC)
-        usdc = deposit_usd
-        btc_usd = 0.0
-    elif current_price >= upper_price:
-        # Цена выше диапазона — позиция целиком в token1 (cbBTC)
+        # Цена cbBTC ниже диапазона — позиция целиком в token1 (cbBTC)
         usdc = 0.0
         btc_usd = deposit_usd
+    elif current_price >= upper_price:
+        # Цена cbBTC выше диапазона — позиция целиком в token0 (USDC)
+        usdc = deposit_usd
+        btc_usd = 0.0
     else:
         usdc = deposit_usd / 2
         btc_usd = deposit_usd / 2
@@ -158,6 +173,9 @@ async def get_current_price() -> float:
 async def get_position() -> Optional[Position]:
     """Читает реальную цену с реального пула. Позиция — демо (DRY_RUN),
     реальных позиций/транзакций в Фазе 1 ещё нет."""
+    if config.is_placeholder(config.POOL_ADDRESS):
+        return None
+
     w3 = _get_web3()
     pool = _get_pool_contract(w3)
     state = await _pool_state(w3, pool)
@@ -165,16 +183,24 @@ async def get_position() -> Optional[Position]:
     dec0, dec1 = state["dec0"], state["dec1"]
     tick_spacing = state["tick_spacing"]
 
-    if config.is_placeholder(config.POOL_ADDRESS):
-        return None
-
     if DRY_RUN and DEMO_POSITION:
         global _demo_range
         if _demo_range is None:
             raw_lower = current_price * (1 - config.RANGE_WIDTH_PCT / 100)
             raw_upper = current_price * (1 + config.RANGE_WIDTH_PCT / 100)
-            tick_lower = _align_tick(_price_to_tick(raw_lower, dec0, dec1), tick_spacing)
-            tick_upper = _align_tick(_price_to_tick(raw_upper, dec0, dec1), tick_spacing)
+            raw_tick_lower = _price_to_tick(raw_lower, dec0, dec1)
+            raw_tick_upper = _price_to_tick(raw_upper, dec0, dec1)
+
+            # В UniswapV3-логике lowerTick должен быть выровнен вниз, upperTick — вверх,
+            # чтобы диапазон гарантированно покрывал исходные границы. В нашем случае
+            # из-за инверсии цены tick для raw_lower может оказаться численно больше tick
+            # для raw_upper — поэтому выбираем направление выравнивания по порядку тиков.
+            if raw_tick_lower <= raw_tick_upper:
+                tick_lower = _align_tick(raw_tick_lower, tick_spacing, rounding="down")
+                tick_upper = _align_tick(raw_tick_upper, tick_spacing, rounding="up")
+            else:
+                tick_lower = _align_tick(raw_tick_lower, tick_spacing, rounding="up")
+                tick_upper = _align_tick(raw_tick_upper, tick_spacing, rounding="down")
             # _price_to_tick/_tick_to_price уже сами учитывают инверсию (наша
             # "цена BTC в USDC" — это 1/raw_price token1-за-token0), поэтому
             # tick_lower здесь численно БОЛЬШЕ tick_upper (например -63900 vs
