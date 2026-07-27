@@ -1,11 +1,57 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
+from typing import Optional
 
 import config
 from aerodrome import get_position
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+
+out_of_range_since: Optional[datetime] = None
+
+
+async def monitor_position() -> None:
+    global out_of_range_since
+
+    try:
+        position = await get_position()
+        if position is None:
+            log.error("Не удалось получить позицию — проверь POOL_ADDRESS в .env")
+            return
+
+        demo = " [ДЕМО]" if position.is_demo else ""
+        status = "в диапазоне" if position.in_range else "ВНЕ диапазона"
+        log.info(
+            f"Позиция{demo}: ${position.total_value_usd:.2f} "
+            f"(USDC ${position.value_token0_usd:.2f} + cbBTC ${position.value_token1_usd:.2f})"
+        )
+        log.info(f"Цена cbBTC: ${position.current_price:,.2f}")
+        log.info(f"Диапазон: ${position.lower_price:,.2f} — ${position.upper_price:,.2f}")
+        log.info(f"Статус: {status}")
+
+        now = datetime.now(timezone.utc)
+        if not position.in_range and out_of_range_since is None:
+            out_of_range_since = now
+            log.warning(
+                "СОБЫТИЕ: цена вышла из диапазона (с %s UTC).",
+                out_of_range_since.replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", ""),
+            )
+        elif position.in_range and out_of_range_since is not None:
+            duration_sec = max(0.0, (now - out_of_range_since).total_seconds())
+            since = out_of_range_since.replace(microsecond=0).isoformat().replace("+00:00", "")
+            out_of_range_since = None
+            log.info(
+                "СОБЫТИЕ: цена вернулась в диапазон (вне диапазона %.0f сек, с %s UTC).",
+                duration_sec,
+                since,
+            )
+
+    except Exception:
+        log.exception("Ошибка мониторинга (тик пропущен), продолжу на следующем.")
 
 
 async def main() -> None:
@@ -14,20 +60,12 @@ async def main() -> None:
     log.info(f"Пул: {config.POOL_ADDRESS}")
     log.info("=" * 50)
 
-    position = await get_position()
-    if position is None:
-        log.error("Не удалось получить позицию — проверь POOL_ADDRESS в .env")
-        return
-
-    demo = " [ДЕМО]" if position.is_demo else ""
-    status = "в диапазоне" if position.in_range else "ВНЕ диапазона"
-    log.info(
-        f"Позиция{demo}: ${position.total_value_usd:.2f} "
-        f"(USDC ${position.value_token0_usd:.2f} + cbBTC ${position.value_token1_usd:.2f})"
-    )
-    log.info(f"Цена cbBTC: ${position.current_price:,.2f}")
-    log.info(f"Диапазон: ${position.lower_price:,.2f} — ${position.upper_price:,.2f}")
-    log.info(f"Статус: {status}")
+    try:
+        while True:
+            await monitor_position()
+            await asyncio.sleep(config.POLL_INTERVAL_SEC)
+    except (KeyboardInterrupt, SystemExit):
+        log.info("Остановка по сигналу (KeyboardInterrupt/SystemExit).")
 
 
 if __name__ == "__main__":
